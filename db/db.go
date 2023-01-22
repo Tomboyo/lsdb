@@ -1,11 +1,30 @@
 package db
 
-import "errors"
+import (
+	"io/fs"
+	"os"
+)
 
-func Add(key, value string) error {
-	return errors.New("not yet implemented")
+type Db struct {
+	data     fs.FS
+	memtable map[string]string
 }
 
-func Get(key string) (*string, error) {
-	return nil, errors.New("value not found")
+// Returns a Db using the given data directory for persistence.
+func NewDb(datadir string) Db {
+	var dirfs = os.DirFS(datadir)
+	return Db{dirfs, make(map[string]string)}
+}
+
+func (db *Db) Add(key, value string) {
+	db.memtable[key] = value
+}
+
+func (db Db) Get(key string) (*string, bool) {
+	value, ok := db.memtable[key]
+	if ok {
+		return &value, true
+	} else {
+		return nil, false
+	}
 }
