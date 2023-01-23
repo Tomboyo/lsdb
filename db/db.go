@@ -1,76 +1,38 @@
 package db
 
 import (
-	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/google/btree"
 )
 
-type kv struct {
-	key, value string
-	data       []byte
-}
-
-func newDataKv(key, value string) kv {
-	kbytes := []byte(key)
-	vbytes := []byte(value)
-	kl := uint64(len(kbytes))
-	vl := uint64(len(vbytes))
-
-	// Create a data payload with the following byte signature:
-	// key header:   8 bytes indicating length in bytes of key data
-	// value header: 8 bytes indicating length in bytes of value data
-	// key data:     variable length
-	// value data:   variable length
-	data := make([]byte, 0, 128+kl+vl)
-	buffer := make([]byte, 8)
-	binary.BigEndian.PutUint64(buffer, kl)
-	data = append(data, buffer...)
-	binary.BigEndian.PutUint64(buffer, vl)
-	data = append(data, buffer...)
-	data = append(data, kbytes...)
-	data = append(data, vbytes...)
-
-	return kv{key, value, data}
-}
-
-func newSearchKv(key string) kv {
-	return kv{key, "", nil}
-}
-
-func less(a, b kv) bool {
-	return strings.Compare(a.key, b.key) == -1
-}
-
 type memtable struct {
-	size    uint
-	maxsize uint
-	data    btree.BTreeG[kv]
+	size    uint64
+	maxsize uint64
+	data    btree.BTreeG[Kv]
 }
 
 func newMemtable() memtable {
-	return memtable{0, 64, *btree.NewG(2, less)}
+	return memtable{0, 64, *btree.NewG(2, KvLess)}
 }
 
 func (m *memtable) add(key, value string) {
-	new := newDataKv(key, value)
+	new := NewKv(key, value)
 	old, hasOld := m.data.ReplaceOrInsert(new)
 	if hasOld {
-		m.size = m.size - uint(len(old.data)) + uint(len(new.data))
+		m.size = m.size - old.ByteLen() + new.ByteLen()
 	} else {
-		m.size += uint(len(new.data))
+		m.size += new.ByteLen()
 	}
 }
 
 func (m memtable) get(key string) (string, bool) {
-	value, hasValue := m.data.Get(newSearchKv(key))
+	kv, hasValue := m.data.Get(NewSearchKv(key))
 	if hasValue {
-		return value.value, true
+		return string(kv.value), true
 	} else {
 		return "", false
 	}
@@ -78,31 +40,11 @@ func (m memtable) get(key string) (string, bool) {
 
 func (m memtable) serialize() []byte {
 	var bytes []byte
-	m.data.Descend(func(item kv) bool {
-		bytes = append(bytes, item.data...)
+	m.data.Descend(func(item Kv) bool {
+		bytes = append(bytes, item.Marshal()...)
 		return true
 	})
 	return bytes
-}
-
-func getSerialized(key string, logfile []byte) (string, bool) {
-	for offset := 0; offset < len(logfile); {
-		klo := uint64(offset) // key-length field offset
-		vlo := klo + 8        // value-length field offset
-		kdo := vlo + 8        // key data field offset
-
-		keyLen := binary.BigEndian.Uint64(logfile[klo:vlo])
-		valLen := binary.BigEndian.Uint64(logfile[vlo:kdo])
-		vdo := kdo + keyLen // value data field offset
-		if keyLen == uint64(len(key)) {
-			loggedKey := string(logfile[kdo:vdo])
-			if key == loggedKey {
-				return string(logfile[vdo : vdo+valLen]), true
-			}
-		}
-		offset = int(vdo + valLen)
-	}
-	return "", false
 }
 
 type Db struct {
@@ -144,7 +86,7 @@ func (db Db) Get(key string) (string, bool) {
 			if err != nil {
 				log.Fatalf("Failed to open log file %v: %v\n", path, err)
 			}
-			value, ok := getSerialized(key, bytes)
+			value, ok := findInLog(key, bytes)
 			if ok {
 				return value, true
 			}
@@ -154,6 +96,25 @@ func (db Db) Get(key string) (string, bool) {
 		}
 		return "", false
 	}
+}
+
+func findInLog(key string, log []byte) (string, bool) {
+	for offset := 0; offset < len(log); {
+		kv, len := UnmarshalKv(log[offset:])
+		comp := CompareKeyToKv(key, kv)
+
+		if comp == 0 {
+			return kv.ValString(), true
+		}
+
+		// Keys are in descending order, so the search is not in this block.
+		if comp == 1 {
+			return "", false
+		}
+
+		offset += int(len)
+	}
+	return "", false
 }
 
 func (db *Db) flush() error {

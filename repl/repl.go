@@ -17,7 +17,7 @@ func main() {
 		fmt.Println("Could not find home directory!")
 		return
 	}
-	datadir = filepath.Join(datadir, ".lsf")
+	datadir = filepath.Join(datadir, ".lsdb")
 
 	db := db.NewDb(datadir)
 
