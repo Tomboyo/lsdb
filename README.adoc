@@ -1,0 +1,67 @@
+= Log Structured Database (LSDB)
+
+After reading about log-structured database strategies in Designing Data Intensive Applications by Martin Kleppmann, I thought it would be a lot of fun to try writing my own toy log-based database.
+
+== What Is It And How Does It Work?
+
+This is a simple log-structured key-value store that lets a user associate utf8 textual data with utf8 keys, where subsequent associations with a key override prior associations.
+
+New key-value pairs are stored first in an in-memory binary tree, or _memtable_. Once the tree reaches a threshold size, the distinct key-value pairs are written to a log file on the disc in sorted order, forming an SSTable (sorted-string table). Successive log files are written as memtables are flushed over time; tables are not modified after they are written.
+
+To retrieve a key, the database first consults the memtable to see if it is held in-memory already. If not, it then consults log files in the reverse order they were written (most recent first). As soon as the database finds a value associated with the key, it returns the value and stops searching. While older log files might also contain values associated with the requested key, those values are older and semantically have been superseded by associations in younger log files (or the memtable). So, only the most-recent association is sought.
+
+There are a lot of things that this toy implementation does not do yet. For example, it does not perform _log compaction_ whereby log segments are combined and redundant key-value associations are discarded. It also doesn't implement a write-ahead log to avoid losing data held by the memtable during a crash. It doesn't implement any indexing to reduce query times. It doesn't actually respect log segments written by prior instances of the database, yet. These are some of the fun things I might try to implement next.
+
+== Usage With REPL
+
+You can start a REPL session with the database via `go run repl/repl.go`. This will create a database directory at `~/.lsdb`, where it will happily overwrite any files you might already have, so be warned. You can give it `add $key $value` and `get $key` commands. Send EOF (ctrl+D) to stop. Here's a sample session, where I wrote two log files worth of key-value pairs:
+
+```bash
+tomboyo@localhost$ go run repl/repl.go 
+Ready for commands
+add x 123456789
+Persisted x = 123456789
+add y 987654321
+Persisted y = 987654321
+add z 1594872630
+2023/01/23 00:44:17 Flushing memtable (79 bytes > 64 bytes)
+2023/01/23 00:44:17 Wrote 79 bytes to /home/tomboyo/.lsf/0.log
+Persisted z = 1594872630
+add x 9
+Persisted x = 9
+get x
+9
+get y
+2023/01/23 00:44:26 Searching for y in /home/tomboyo/.lsf/0.log
+987654321
+get z
+2023/01/23 00:44:27 Searching for z in /home/tomboyo/.lsf/0.log
+1594872630
+add a alphabetical
+Persisted a = alphabetical
+add b businesscat
+2023/01/23 00:44:36 Flushing memtable (75 bytes > 64 bytes)
+2023/01/23 00:44:36 Wrote 75 bytes to /home/tomboyo/.lsf/1.log
+Persisted b = businesscat
+add c carpentry
+Persisted c = carpentry
+get x
+2023/01/23 00:44:44 Searching for x in /home/tomboyo/.lsf/1.log
+9
+get y
+2023/01/23 00:44:45 Searching for y in /home/tomboyo/.lsf/1.log
+2023/01/23 00:44:45 Searching for y in /home/tomboyo/.lsf/0.log
+987654321
+get z
+2023/01/23 00:44:47 Searching for z in /home/tomboyo/.lsf/1.log
+2023/01/23 00:44:47 Searching for z in /home/tomboyo/.lsf/0.log
+1594872630
+get a
+2023/01/23 00:44:48 Searching for a in /home/tomboyo/.lsf/1.log
+alphabetical
+get b
+2023/01/23 00:44:49 Searching for b in /home/tomboyo/.lsf/1.log
+businesscat
+get c
+carpentry
+```
