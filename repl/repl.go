@@ -17,9 +17,7 @@ func main() {
 		fmt.Println("Could not find home directory!")
 		return
 	}
-
-	datadir = filepath.Join(datadir, ".lfsdb")
-	os.MkdirAll(datadir, 0600)
+	datadir = filepath.Join(datadir, ".lsf")
 
 	db := db.NewDb(datadir)
 
@@ -49,7 +47,7 @@ func main() {
 
 			value, err := db.Get(key)
 			if err {
-				fmt.Println(*value)
+				fmt.Println(value)
 			} else {
 				fmt.Printf("Value not found for key %s\n", key)
 			}
