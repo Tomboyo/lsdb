@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/google/btree"
 )
@@ -50,17 +51,34 @@ func (m memtable) serialize() []byte {
 type Db struct {
 	datadir  string
 	memtable memtable
-	maxsize  uint
-	head     uint
+	maxsize  uint64
+	head     uint64
 }
 
 // Returns a Db using the given data directory for persistence.
 func NewDb(datadir string) Db {
+	os.MkdirAll(datadir, 0700)
+	files, err := os.ReadDir(datadir)
+	if err != nil {
+		log.Fatalf("Unable to recover log files: %v", err)
+	}
+
+	max := uint64(0)
+	for _, f := range files {
+		x, err := strconv.ParseUint(f.Name(), 10, 64)
+		if err != nil {
+			log.Fatalf("Unexpected log file name: %v", f.Name())
+		}
+		if x > max {
+			max = x
+		}
+	}
+
 	return Db{
 		datadir,
 		newMemtable(),
 		2,
-		0,
+		max + 1,
 	}
 }
 
@@ -119,8 +137,6 @@ func findInLog(key string, log []byte) (string, bool) {
 
 func (db *Db) flush() error {
 	log.Printf("Flushing memtable (%v bytes > %v bytes)\n", db.memtable.size, db.memtable.maxsize)
-	os.MkdirAll(db.datadir, 0700)
-
 	f, err := os.OpenFile(
 		db.logFilePath(db.head),
 		os.O_CREATE|os.O_WRONLY,
@@ -141,6 +157,6 @@ func (db *Db) flush() error {
 	return nil
 }
 
-func (db Db) logFilePath(n uint) string {
-	return filepath.Join(db.datadir, fmt.Sprint(n, ".log"))
+func (db Db) logFilePath(n uint64) string {
+	return filepath.Join(db.datadir, fmt.Sprint(n))
 }
