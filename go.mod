@@ -1,4 +1,4 @@
-module com/github/tomboyo/lsf
+module com/github/tomboyo/lsdb
 
 go 1.18
 

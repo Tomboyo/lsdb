@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"com/github/tomboyo/lsf/db"
+	"com/github/tomboyo/lsdb/db"
 	"fmt"
 	"os"
 	"path/filepath"
