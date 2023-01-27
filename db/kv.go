@@ -28,7 +28,7 @@ func (kv Kv) ValString() string {
 }
 
 func (kv Kv) ByteLen() uint64 {
-	return uint64(32 + len(kv.key) + len(kv.value))
+	return uint64(16 + len(kv.key) + len(kv.value))
 }
 
 // Marshal this Kv to bytes.

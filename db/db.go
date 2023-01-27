@@ -1,10 +1,13 @@
 package db
 
 import (
+	"com/github/tomboyo/lsdb/enum"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	"github.com/google/btree"
@@ -53,42 +56,44 @@ type Db struct {
 	memtable memtable
 	maxsize  uint64
 	head     uint64
+	segments []string
 }
 
 // Returns a Db using the given data directory for persistence.
 func NewDb(datadir string) Db {
 	os.MkdirAll(datadir, 0700)
-	files, err := os.ReadDir(datadir)
-	if err != nil {
-		log.Fatalf("Unable to recover log files: %v", err)
-	}
 
-	max := uint64(0)
-	for _, f := range files {
-		x, err := strconv.ParseUint(f.Name(), 10, 64)
+	segments := findSegments(datadir)
+	log.Printf("Recovered segments: %v", segments)
+
+	var head uint64
+	if len(segments) > 0 {
+		headIdx, err := strconv.ParseUint(segments[0], 10, 64)
 		if err != nil {
-			log.Fatalf("Unexpected log file name: %v", f.Name())
+			log.Fatalf("Unexpected non-uint log file name: %v", err)
 		}
-		if x > max {
-			max = x
-		}
+		head = headIdx + 1
+	} else {
+		head = 0
 	}
 
 	return Db{
 		datadir,
 		newMemtable(),
 		2,
-		max + 1,
+		head,
+		segments,
 	}
 }
 
 func (db *Db) Add(key, value string) {
 	db.memtable.add(key, value)
 	if db.memtable.size >= db.memtable.maxsize {
-		err := db.flush()
+		segment, err := db.flush()
 		if err != nil {
 			log.Fatalf("Failed to persist memtable: %v\n", err)
 		}
+		db.segments = append(db.segments, segment)
 	}
 }
 
@@ -97,23 +102,50 @@ func (db Db) Get(key string) (string, bool) {
 	if ok {
 		return value, true
 	} else {
-		for i := db.head - 1; ; i-- {
-			path := db.logFilePath(i)
-			log.Printf("Searching for %v in %v", key, path)
-			bytes, err := os.ReadFile(path)
+		for i := len(db.segments) - 1; i >= 0; i-- {
+			segment := db.logFilePath(db.segments[i])
+			log.Printf("Searching for %v in %v", key, segment)
+			bytes, err := os.ReadFile(segment)
 			if err != nil {
-				log.Fatalf("Failed to open log file %v: %v\n", path, err)
+				log.Fatalf("Failed to open log file %v: %v\n", segment, err)
 			}
 			value, ok := findInLog(key, bytes)
 			if ok {
 				return value, true
 			}
-			if i == 0 {
-				break
-			}
 		}
 		return "", false
 	}
+}
+
+func (db Db) Close() error {
+	_, err := db.flush()
+	return err
+}
+
+// Returns a list of segment file names in ascending order of age, youngest
+// segments last (segments with greatest file number last).
+func findSegments(datadir string) []string {
+	files, err := os.ReadDir(datadir)
+	if err != nil {
+		log.Fatalf("Unable to recover log files: %v", err)
+	}
+
+	filenames := enum.Map(files, func(f fs.DirEntry) uint64 {
+		name, err := strconv.ParseUint(f.Name(), 10, 64)
+		if err != nil {
+			log.Fatalf("Unexpected non-uint log file name %v: %v", f.Name(), err)
+		}
+		return name
+	})
+
+	sort.Slice(filenames, func(i, j int) bool {
+		return filenames[i] < filenames[j]
+	})
+
+	return enum.Map(filenames, func(x uint64) string {
+		return fmt.Sprint(x)
+	})
 }
 
 func findInLog(key string, log []byte) (string, bool) {
@@ -135,28 +167,30 @@ func findInLog(key string, log []byte) (string, bool) {
 	return "", false
 }
 
-func (db *Db) flush() error {
+func (db *Db) flush() (string, error) {
 	log.Printf("Flushing memtable (%v bytes > %v bytes)\n", db.memtable.size, db.memtable.maxsize)
+	newSegment := fmt.Sprint(db.head)
+	path := db.logFilePath(newSegment)
 	f, err := os.OpenFile(
-		db.logFilePath(db.head),
+		path,
 		os.O_CREATE|os.O_WRONLY,
 		0600)
 	if err != nil {
-		return err
+		return path, err
 	}
 
 	data := db.memtable.serialize()
 	bytes, err := f.Write(data)
 	if err != nil {
-		return err
+		return path, err
 	}
 
 	log.Printf("Wrote %v bytes to %v", bytes, f.Name())
 	db.head += 1
 	db.memtable = newMemtable()
-	return nil
+	return newSegment, nil
 }
 
-func (db Db) logFilePath(n uint64) string {
-	return filepath.Join(db.datadir, fmt.Sprint(n))
+func (db Db) logFilePath(s string) string {
+	return filepath.Join(db.datadir, s)
 }
