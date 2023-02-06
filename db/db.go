@@ -1,14 +1,13 @@
 package db
 
 import (
-	"com/github/tomboyo/lsdb/enum"
+	"com/github/tomboyo/lsdb/support"
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/google/btree"
 )
@@ -53,6 +52,7 @@ func (m memtable) serialize() []byte {
 
 type Db struct {
 	datadir  string
+	segfile  string
 	memtable memtable
 	maxsize  uint64
 	head     uint64
@@ -63,14 +63,15 @@ type Db struct {
 func NewDb(datadir string) Db {
 	os.MkdirAll(datadir, 0700)
 
-	segments := findSegments(datadir)
+	segfile := filepath.Join(datadir, "segments")
+	segments := loadSegments(segfile)
 	log.Printf("Recovered segments: %v", segments)
 
 	var head uint64
 	if len(segments) > 0 {
 		headIdx, err := strconv.ParseUint(segments[0], 10, 64)
 		if err != nil {
-			log.Fatalf("Unexpected non-uint log file name: %v", err)
+			log.Fatalf("Unexpected non-uint log file name: %v\n", err)
 		}
 		head = headIdx + 1
 	} else {
@@ -79,6 +80,7 @@ func NewDb(datadir string) Db {
 
 	return Db{
 		datadir,
+		segfile,
 		newMemtable(),
 		2,
 		head,
@@ -102,7 +104,7 @@ func (db Db) Get(key string) (string, bool) {
 	if ok {
 		return value, true
 	} else {
-		for i := len(db.segments) - 1; i >= 0; i-- {
+		for i := 0; i < len(db.segments); i++ {
 			segment := db.logFilePath(db.segments[i])
 			log.Printf("Searching for %v in %v", key, segment)
 			bytes, err := os.ReadFile(segment)
@@ -123,29 +125,32 @@ func (db Db) Close() error {
 	return err
 }
 
-// Returns a list of segment file names in ascending order of age, youngest
-// segments last (segments with greatest file number last).
-func findSegments(datadir string) []string {
-	files, err := os.ReadDir(datadir)
-	if err != nil {
-		log.Fatalf("Unable to recover log files: %v", err)
+func loadSegments(segfile string) []string {
+	bytes, err := os.ReadFile(segfile)
+
+	if os.IsNotExist(err) {
+		return []string{}
+	} else if err != nil {
+		log.Fatalf("Unable to read segment file: %v\n", err)
 	}
 
-	filenames := enum.Map(files, func(f fs.DirEntry) uint64 {
-		name, err := strconv.ParseUint(f.Name(), 10, 64)
-		if err != nil {
-			log.Fatalf("Unexpected non-uint log file name %v: %v", f.Name(), err)
-		}
-		return name
-	})
+	segments := strings.Split(string(bytes), "\n")
+	// Segment files always end with a trailing newline. After splitting, this
+	// leaves a dangling "", and after reversing, it's at the head of the slice.
+	// Skip it.
+	return support.Reverse(segments)[1:]
+}
 
-	sort.Slice(filenames, func(i, j int) bool {
-		return filenames[i] < filenames[j]
-	})
-
-	return enum.Map(filenames, func(x uint64) string {
-		return fmt.Sprint(x)
-	})
+func (db Db) addSegment(segment string) error {
+	f, err := os.OpenFile(db.segfile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(segment + "\n")
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func findInLog(key string, log []byte) (string, bool) {
@@ -181,6 +186,11 @@ func (db *Db) flush() (string, error) {
 
 	data := db.memtable.serialize()
 	bytes, err := f.Write(data)
+	if err != nil {
+		return path, err
+	}
+
+	err = db.addSegment(newSegment)
 	if err != nil {
 		return path, err
 	}
