@@ -8,47 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/google/btree"
 )
-
-type memtable struct {
-	size    uint64
-	maxsize uint64
-	data    btree.BTreeG[Kv]
-}
-
-func newMemtable() memtable {
-	return memtable{0, 64, *btree.NewG(2, KvLess)}
-}
-
-func (m *memtable) add(key, value string) {
-	new := NewKv(key, value)
-	old, hasOld := m.data.ReplaceOrInsert(new)
-	if hasOld {
-		m.size = m.size - old.ByteLen() + new.ByteLen()
-	} else {
-		m.size += new.ByteLen()
-	}
-}
-
-func (m memtable) get(key string) (string, bool) {
-	kv, hasValue := m.data.Get(NewSearchKv(key))
-	if hasValue {
-		return string(kv.value), true
-	} else {
-		return "", false
-	}
-}
-
-func (m memtable) serialize() []byte {
-	var bytes []byte
-	m.data.Descend(func(item Kv) bool {
-		bytes = append(bytes, item.Marshal()...)
-		return true
-	})
-	return bytes
-}
 
 type Db struct {
 	datadir  string
@@ -155,11 +115,11 @@ func (db Db) addSegment(segment string) error {
 
 func findInLog(key string, log []byte) (string, bool) {
 	for offset := 0; offset < len(log); {
-		kv, len := UnmarshalKv(log[offset:])
-		comp := CompareKeyToKv(key, kv)
+		kv, len := unmarshalKvpair(log[offset:])
+		comp := compareKeyToKvpair(key, kv)
 
 		if comp == 0 {
-			return kv.ValString(), true
+			return kv.valString(), true
 		}
 
 		// Keys are in descending order, so the search is not in this block.
